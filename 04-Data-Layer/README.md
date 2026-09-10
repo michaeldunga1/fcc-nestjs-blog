@@ -1,11 +1,12 @@
 # 04-Data-Layer — Circuit Daily
 
+Port: 3001
+
 ```bash
-docker compose up -d
 cd 04-Data-Layer
 npm install
 cp .env.example .env
-npx nest start
+npm run start:dev
 ```
 
-http://127.0.0.1:3001
+Open http://127.0.0.1:3001

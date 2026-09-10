@@ -1,6 +1,13 @@
-<h1>{{profile.displayName}}</h1>
-{{#if profile.imagePath}}<img class="avatar" src="{{profile.imagePath}}" alt="" />{{/if}}
-<p>{{#if profile.bio}}{{profile.bio}}{{else}}No bio yet.{{/if}}</p>
-{{#if isSelf}}<p><a href="/profile/edit">Edit profile</a></p>{{/if}}
-<h2>Posts</h2>
-{{#each posts}}<p><a href="/posts/{{id}}">{{title}}</a></p>{{else}}<p class="text-muted">No posts yet.</p>{{/each}}
+<div class="d-flex gap-3 align-items-start">
+  {{#if profile.imagePath}}<img class="avatar" src="{{profile.imagePath}}" alt="" />{{/if}}
+  <div>
+    <h1>{{profile.displayName}}</h1>
+    <p class="text-muted">@{{profile.username}}</p>
+    <p>{{profile.bio}}</p>
+    {{#if isSelf}}<a class="btn btn-sm btn-outline-primary" href="/profile/edit">Edit profile</a>{{/if}}
+  </div>
+</div>
+<hr />
+{{#each posts}}
+  <article class="post-card"><h2 class="h5"><a href="/posts/{{id}}">{{title}}</a></h2></article>
+{{/each}}

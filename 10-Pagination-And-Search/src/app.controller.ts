@@ -1,206 +1,214 @@
-    import { Controller, Get, Post as HttpPost, Req, Res, Param, Query, UploadedFile, UseInterceptors, Body } from '@nestjs/common';
-    import { FileInterceptor } from '@nestjs/platform-express';
-    import { InjectRepository } from '@nestjs/typeorm';
-    import { Repository, ILike } from 'typeorm';
-    import { Request, Response } from 'express';
-    import * as bcrypt from 'bcryptjs';
-    import * as crypto from 'crypto';
-    import { diskStorage } from 'multer';
-    import { extname, join } from 'path';
-    import { User, Post } from './entities';
+import { BadRequestException, Controller, ForbiddenException, Get, NotFoundException, Param, Post as HttpPost, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, Body } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Request, Response } from 'express';
+import { AppService } from './app.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, ILike } from 'typeorm';
+import { User } from './entities/user.entity';
+import { Post } from './entities/post.entity';
+import * as bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import { existsSync, mkdirSync } from 'fs';
+import { AuthGuard } from '@nestjs/passport';
 
-    type Sess = Request & { session: any };
+@Controller()
+export class AppController {
+  constructor(private readonly appService: AppService, @InjectRepository(User) private users: Repository<User>, @InjectRepository(Post) private posts: Repository<Post>) {}
 
-    @Controller()
-    export class AppController {
-      constructor(
-        @InjectRepository(User) private users: Repository<User>,
-        @InjectRepository(Post) private posts: Repository<Post>,
-      ) {}
+  private render(res: Response, req: Request, view: string, data: Record<string, any> = {}) {
+    const user = (req as any).user || null;
+    const flash = (req.session as any)?.flash;
+    if (req.session) (req.session as any).flash = undefined;
+    const canCreate = true && !!user;
+    return res.render(view, {
+      layout: 'main',
+      user,
+      flash,
+      canCreate,
+      resetLink: false,
+      detail: true,
+      ...data,
+    });
+  }
 
-      private async render(res: Response, req: Sess, view: string, data: any = {}) {
-        const user = await this.currentUser(req);
-        const flash = req.session?.flash;
-        if (req.session) delete req.session.flash;
-        const body = await new Promise<string>((resolve, reject) => {
-          res.render(view, { ...data, user, canCreate: true, layout: false }, (err, html) => err ? reject(err) : resolve(html || ''));
-        });
-        return res.render('layout', { ...data, user, canCreate: true, flash, body, layout: false });
-      }
+  @Get('health') health() { return { ok: true }; }
 
-      private async currentUser(req: Sess) {
-        const id = req.session?.userId; if (!id) return null; return this.users.findOneBy({{ id }});
-      }
+  @Get()
+  async home(@Req() req: Request, @Res() res: Response, @Query('page') pageRaw?: string, @Query('q') q?: string) {
+    const page = Math.max(1, Number(pageRaw || 1) || 1);
+    const pageSize = 5;
+    const where = q ? [{ title: ILike(`%${q}%`) }, { content: ILike(`%${q}%`) }] : {};
+    const [rows, total] = await this.posts.findAndCount({
+      where: q ? where as any : undefined,
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      relations: ['author'],
+    });
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    const posts = rows.map((p) => ({
+      id: p.id, title: p.title, authorName: p.author.displayName,
+      excerpt: p.content.length > 140 ? p.content.slice(0, 140) + '…' : p.content,
+    }));
+    return this.render(res, req, 'home', {
+      title: 'Latest stories', lead: 'Stories from the circuit desk.', posts, q: q || '',
+      pagination: { page, pages, prev: page > 1 ? page - 1 : null, next: page < pages ? page + 1 : null },
+    });
+  }
 
-      @Get()
-      async home(@Req() req: Sess, @Res() res: Response, @Query('page') page = '1', @Query('q') q = '') {
-        const qb = this.posts.createQueryBuilder('p').leftJoinAndSelect('p.author', 'a').orderBy('p.createdAt', 'DESC');
+  @Get('about')
+  about(@Req() req: Request, @Res() res: Response) {
+    return this.render(res, req, 'about', { title: 'About' });
+  }
 
-        if (true) {
-          if (q) qb.where('p.title ILIKE :q OR p.content ILIKE :q', { q: `%${q}%` });
-          const total = await qb.getCount();
-          const pageSize = 5;
-          const pages = Math.max(1, Math.ceil(total / pageSize));
-          const pageNum = Math.min(Math.max(1, Number(page) || 1), pages);
-          const rows = await qb.skip((pageNum - 1) * pageSize).take(pageSize).getMany();
-          const posts = rows.map(p => ({ id: p.id, title: p.title, authorName: p.author.displayName, excerpt: p.content.length > 140 ? p.content.slice(0,140)+'…' : p.content }));
-          return this.render(res, req, 'home', { title: 'Latest stories', heading: 'Latest stories', lead: 'Stories from Circuit Daily.', posts, q, qDefined: true, pagination: { page: pageNum, pages, prev: pageNum > 1 ? pageNum - 1 : null, next: pageNum < pages ? pageNum + 1 : null } });
-        }
-        const rows = await qb.take(50).getMany();
+  @Get('posts/:id')
+  async detail(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
+    if (!post) throw new NotFoundException();
+    const user = (req as any).user;
+    const canEdit = true && user && user.id === post.authorId;
+    return this.render(res, req, 'post_detail', {
+      title: post.title,
+      post: { id: post.id, title: post.title, content: post.content.replace(/\n/g, '<br>'), authorName: post.author.displayName },
+      canEdit,
+    });
+  }
 
-        const posts = rows.map(p => ({ id: p.id, title: p.title, authorName: p.author.displayName, excerpt: p.content.length > 140 ? p.content.slice(0,140)+'…' : p.content })); return this.render(res, req, 'home', { title: 'Latest stories', heading: 'Latest stories', lead: 'Stories from Circuit Daily.', posts });
-      }
+  @Get('register')
+  registerForm(@Req() req: Request, @Res() res: Response) {
+    return this.render(res, req, 'register', { title: 'Register', error: null });
+  }
 
-      @Get('about')
-      about(@Req() req: Sess, @Res() res: Response) {
-        return this.render(res, req, 'about', { title: 'About' });
-      }
+  @HttpPost('register')
+  async register(@Req() req: Request, @Res() res: Response, @Body() body: any) {
+    const username = String(body.username || '').trim();
+    const email = String(body.email || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    if (password.length < 8) return this.render(res, req, 'register', { title: 'Register', error: 'Password must be at least 8 characters' });
+    const exists = await this.users.findOne({ where: [{ username }, { email }] });
+    if (exists) return this.render(res, req, 'register', { title: 'Register', error: 'Username or email already taken' });
+    const user = this.users.create({
+      username, email, displayName: username, bio: '', imagePath: null,
+      passwordHash: await bcrypt.hash(password, 10),
+    });
+    await this.users.save(user);
+    return res.redirect('/login');
+  }
 
-      @Get('posts/:id')
-      async detail(@Param('id') id: string, @Req() req: Sess, @Res() res: Response) {
-        const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
-        if (!post) return res.status(404).send('Not found');
-        const user = await this.currentUser(req);
-        const canEdit = true && user && user.id === post.author.id;
-        return this.render(res, req, 'post_detail', { title: post.title, post: { id: post.id, title: post.title, content: post.content, authorName: post.author.displayName }, canEdit });
-      }
+  @Get('login')
+  loginForm(@Req() req: Request, @Res() res: Response) {
+    return this.render(res, req, 'login', { title: 'Log in', error: null });
+  }
 
+  @HttpPost('login')
+  @UseGuards(AuthGuard('local'))
+  login(@Req() req: Request, @Res() res: Response) {
+    return res.redirect('/');
+  }
 
-      @Get('register')
-      registerForm(@Req() req: Sess, @Res() res: Response) {
-        return this.render(res, req, 'register', { title: 'Register' });
-      }
+  @Get('logout')
+  logout(@Req() req: Request, @Res() res: Response) {
+    req.logout(() => res.redirect('/'));
+  }
 
-      @HttpPost('register')
-      async register(@Req() req: Sess, @Res() res: Response) {
-        const username = String(req.body.username || '').trim();
-        const email = String(req.body.email || '').trim().toLowerCase();
-        const password = String(req.body.password || '');
-        if (password.length < 8) return this.render(res, req, 'register', { title: 'Register', error: 'Password must be at least 8 characters' });
-        const exists = await this.users.findOne({ where: [{ username }, { email }] });
-        if (exists) return this.render(res, req, 'register', { title: 'Register', error: 'Username or email already taken' });
-        const user = this.users.create({ username, email, displayName: username, passwordHash: await bcrypt.hash(password, 10) });
-        await this.users.save(user);
-        req.session.userId = user.id; req.session.flash = 'Welcome aboard';
-        return res.redirect('/');
-      }
+  @Get('profile')
+  profileSelf(@Req() req: Request, @Res() res: Response) {
+    const user = (req as any).user;
+    if (!user) return res.redirect('/login');
+    return res.redirect(`/users/${user.username}`);
+  }
 
+  @Get('users/:username')
+  async profile(@Param('username') username: string, @Req() req: Request, @Res() res: Response) {
+    const profile = await this.users.findOne({ where: { username } });
+    if (!profile) throw new NotFoundException();
+    const user = (req as any).user;
+    const posts = await this.posts.find({ where: { authorId: profile.id }, order: { createdAt: 'DESC' } });
+    return this.render(res, req, 'profile', {
+      title: profile.displayName, profile, posts, isSelf: !!(user && user.id === profile.id),
+    });
+  }
 
-      @Get('login')
-      loginForm(@Req() req: Sess, @Res() res: Response) {
-        return this.render(res, req, 'login', { title: 'Log in' });
-      }
+  @Get('profile/edit')
+  profileEditForm(@Req() req: Request, @Res() res: Response) {
+    const user = (req as any).user;
+    if (!user) return res.redirect('/login');
+    return this.render(res, req, 'profile_edit', { title: 'Edit profile', profile: user });
+  }
 
-      @HttpPost('login')
-      async login(@Req() req: Sess, @Res() res: Response) {
-        const email = String(req.body.email || '').trim().toLowerCase();
-        const password = String(req.body.password || '');
-        const user = await this.users.findOne({ where: { email } });
-        if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-          return this.render(res, req, 'login', { title: 'Log in', error: 'Invalid email or password' });
-        }
-        req.session.userId = user.id;
-        return res.redirect('/');
-      }
+  @HttpPost('profile/edit')
+  @UseInterceptors(FileInterceptor('image', {
+    storage: diskStorage({
+      destination: (_req, _file, cb) => {
+        const dir = join(process.cwd(), 'uploads');
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (_req, file, cb) => cb(null, `${Date.now()}-${randomBytes(6).toString('hex')}${extname(file.originalname)}`),
+    }),
+    limits: { fileSize: 2 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) return cb(new BadRequestException('Unsupported image type') as any, false);
+      cb(null, true);
+    },
+  }))
+  async profileEdit(@Req() req: Request, @Res() res: Response, @Body() body: any, @UploadedFile() file?: Express.Multer.File) {
+    const user = (req as any).user as User;
+    if (!user) return res.redirect('/login');
+    user.displayName = String(body.displayName || '').trim();
+    user.bio = String(body.bio || '').trim();
+    if (file) user.imagePath = `/uploads/${file.filename}`;
+    await this.users.save(user);
+    return res.redirect(`/users/${user.username}`);
+  }
 
-      @Get('logout')
-      logout(@Req() req: Sess, @Res() res: Response) {
-        req.session.destroy(() => res.redirect('/'));
-      }
+  @Get('posts/new')
+  newForm(@Req() req: Request, @Res() res: Response) {
+    if (!(req as any).user) return res.redirect('/login');
+    return this.render(res, req, 'post_form', { title: 'New post', heading: 'New post', error: null, titleValue: '', contentValue: '' });
+  }
 
+  @HttpPost('posts/new')
+  async create(@Req() req: Request, @Res() res: Response, @Body() body: any) {
+    const user = (req as any).user as User;
+    if (!user) return res.redirect('/login');
+    const title = String(body.title || '').trim();
+    const content = String(body.content || '').trim();
+    if (title.length < 3) return this.render(res, req, 'post_form', { title: 'New post', heading: 'New post', error: 'Title too short', titleValue: title, contentValue: content });
+    const post = await this.posts.save(this.posts.create({ title, content, author: user, authorId: user.id }));
+    return res.redirect(`/posts/${post.id}`);
+  }
 
-      @Get('profile')
-      async profileSelf(@Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        if (!user) return res.redirect('/login');
-        return res.redirect('/users/' + user.username);
-      }
+  @Get('posts/:id/edit')
+  async editForm(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    const user = (req as any).user as User;
+    const post = await this.posts.findOne({ where: { id: Number(id) } });
+    if (!post) throw new NotFoundException();
+    if (!user || user.id !== post.authorId) throw new ForbiddenException();
+    return this.render(res, req, 'post_form', { title: 'Edit post', heading: 'Edit post', error: null, titleValue: post.title, contentValue: post.content });
+  }
 
-      @Get('users/:username')
-      async profile(@Param('username') username: string, @Req() req: Sess, @Res() res: Response) {
-        const profile = await this.users.findOne({ where: { username } });
-        if (!profile) return res.status(404).send('Not found');
-        const posts = await this.posts.find({ where: { author: { id: profile.id } }, order: { createdAt: 'DESC' } });
-        const user = await this.currentUser(req);
-        return this.render(res, req, 'profile', { title: profile.displayName, profile, posts, isSelf: !!(user && user.id === profile.id) });
-      }
+  @HttpPost('posts/:id/edit')
+  async edit(@Param('id') id: string, @Req() req: Request, @Res() res: Response, @Body() body: any) {
+    const user = (req as any).user as User;
+    const post = await this.posts.findOne({ where: { id: Number(id) } });
+    if (!post) throw new NotFoundException();
+    if (!user || user.id !== post.authorId) throw new ForbiddenException();
+    post.title = String(body.title || '').trim();
+    post.content = String(body.content || '').trim();
+    await this.posts.save(post);
+    return res.redirect(`/posts/${post.id}`);
+  }
 
-      @Get('profile/edit')
-      async profileEditForm(@Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        if (!user) return res.redirect('/login');
-        return this.render(res, req, 'profile_edit', { title: 'Edit profile', profile: user });
-      }
-
-      @HttpPost('profile/edit')
-      @UseInterceptors(FileInterceptor('image', {
-        limits: { fileSize: 2 * 1024 * 1024 },
-        fileFilter: (_req, file, cb) => {
-          if (!['image/jpeg','image/png','image/webp'].includes(file.mimetype)) return cb(new Error('Unsupported image type'), false);
-          cb(null, true);
-        },
-        storage: diskStorage({
-          destination: join(process.cwd(), 'uploads'),
-          filename: (_req, file, cb) => cb(null, Date.now() + '-' + crypto.randomBytes(8).toString('hex') + extname(file.originalname)),
-        }),
-      }))
-      async profileEdit(@Req() req: Sess, @Res() res: Response, @UploadedFile() file?: Express.Multer.File) {
-        const user = await this.currentUser(req);
-        if (!user) return res.redirect('/login');
-        user.displayName = String(req.body.displayName || '').trim();
-        user.bio = String(req.body.bio || '').trim();
-        if (file) user.imagePath = '/uploads/' + file.filename;
-        await this.users.save(user);
-        return res.redirect('/users/' + user.username);
-      }
-
-
-      @Get('posts/new')
-      async newForm(@Req() req: Sess, @Res() res: Response) {
-        if (!(await this.currentUser(req))) return res.redirect('/login');
-        return this.render(res, req, 'post_form', { title: 'New post', heading: 'New post', titleValue: '', contentValue: '' });
-      }
-
-      @HttpPost('posts/new')
-      async newPost(@Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        if (!user) return res.redirect('/login');
-        const title = String(req.body.title || '').trim();
-        const content = String(req.body.content || '').trim();
-        if (title.length < 3) return this.render(res, req, 'post_form', { title: 'New post', heading: 'New post', error: 'Title too short', titleValue: title, contentValue: content });
-        const post = await this.posts.save(this.posts.create({ title, content, author: user }));
-        return res.redirect('/posts/' + post.id);
-      }
-
-      @Get('posts/:id/edit')
-      async editForm(@Param('id') id: string, @Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
-        if (!post) return res.status(404).send('Not found');
-        if (!user || user.id !== post.author.id) return res.status(403).send('Forbidden');
-        return this.render(res, req, 'post_form', { title: 'Edit post', heading: 'Edit post', titleValue: post.title, contentValue: post.content });
-      }
-
-      @HttpPost('posts/:id/edit')
-      async editPost(@Param('id') id: string, @Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
-        if (!post) return res.status(404).send('Not found');
-        if (!user || user.id !== post.author.id) return res.status(403).send('Forbidden');
-        post.title = String(req.body.title || '').trim();
-        post.content = String(req.body.content || '').trim();
-        await this.posts.save(post);
-        return res.redirect('/posts/' + post.id);
-      }
-
-      @HttpPost('posts/:id/delete')
-      async deletePost(@Param('id') id: string, @Req() req: Sess, @Res() res: Response) {
-        const user = await this.currentUser(req);
-        const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
-        if (!post) return res.status(404).send('Not found');
-        if (!user || user.id !== post.author.id) return res.status(403).send('Forbidden');
-        await this.posts.remove(post);
-        return res.redirect('/');
-      }
-
+  @HttpPost('posts/:id/delete')
+  async remove(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    const user = (req as any).user as User;
+    const post = await this.posts.findOne({ where: { id: Number(id) } });
+    if (!post) throw new NotFoundException();
+    if (!user || user.id !== post.authorId) throw new ForbiddenException();
+    await this.posts.remove(post);
+    return res.redirect('/');
+  }
 }

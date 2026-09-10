@@ -1,8 +1,8 @@
 <h1>Register</h1>
 {{#if error}}<div class="alert alert-danger">{{error}}</div>{{/if}}
-<form method="post">
+<form method="post" action="/register" class="col-md-6">
   <div class="mb-3"><label class="form-label">Username</label><input class="form-control" name="username" required /></div>
   <div class="mb-3"><label class="form-label">Email</label><input class="form-control" type="email" name="email" required /></div>
-  <div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" required minlength="8" /></div>
-  <button class="btn btn-primary">Create account</button>
+  <div class="mb-3"><label class="form-label">Password</label><input class="form-control" type="password" name="password" required /></div>
+  <button class="btn btn-primary" type="submit">Create account</button>
 </form>

@@ -1,9 +1,12 @@
-import { Controller, Get } from '@nestjs/common';
+import { BadRequestException, Controller, ForbiddenException, Get, NotFoundException, Param, Post as HttpPost, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, Body } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Request, Response } from 'express';
+import { AppService } from './app.service';
 
 @Controller()
 export class AppController {
+  constructor(private readonly appService: AppService) {}
+
   @Get()
-  home() {
-    return { message: 'Circuit Daily is live', port: 3001 };
-  }
+  root() { return this.appService.hello(); }
 }

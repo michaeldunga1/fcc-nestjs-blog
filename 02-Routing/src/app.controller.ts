@@ -1,15 +1,13 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { BadRequestException, Controller, ForbiddenException, Get, NotFoundException, Param, Post as HttpPost, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, Body } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Request, Response } from 'express';
+import { AppService } from './app.service';
 
 @Controller()
 export class AppController {
-  @Get()
-  @Header('Content-Type', 'text/plain')
-  home() { return 'Circuit Daily home'; }
+  constructor(private readonly appService: AppService) {}
 
-  @Get('about')
-  @Header('Content-Type', 'text/plain')
-  about() { return 'About Circuit Daily'; }
-
-  @Get('health')
-  health() { return { ok: true }; }
+  @Get() root() { return this.appService.hello(); }
+  @Get('about') about() { return 'About Circuit Daily'; }
+  @Get('health') health() { return { ok: true }; }
 }

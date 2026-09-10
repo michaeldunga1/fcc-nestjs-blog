@@ -1,18 +1,20 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
-import { User, Post } from './entities';
+import { AppService } from './app.service';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { User } from './entities/user.entity';
+import { Post } from './entities/post.entity';
+import { SeedService } from './seed.service';
+import { AuthModule } from './auth/auth.module';
 
-@Module({
-  imports: [
-    TypeOrmModule.forRoot({
+    @Module({
+      imports: [TypeOrmModule.forRoot({
       type: 'postgres',
-      url: process.env.DATABASE_URL || 'postgres://circuit:circuit@127.0.0.1:5437/circuit_08',
+      url: process.env.DATABASE_URL,
       entities: [User, Post],
       synchronize: true,
-    }),
-    TypeOrmModule.forFeature([User, Post]),
-  ],
-  controllers: [AppController],
-})
-export class AppModule {}
+    }), TypeOrmModule.forFeature([User, Post]), AuthModule],
+      controllers: [AppController],
+      providers: [AppService, SeedService],
+    })
+    export class AppModule {}

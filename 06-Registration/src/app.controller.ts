@@ -1,88 +1,85 @@
-    import { Controller, Get, Post as HttpPost, Req, Res, Param, Query, UploadedFile, UseInterceptors, Body } from '@nestjs/common';
-    import { FileInterceptor } from '@nestjs/platform-express';
-    import { InjectRepository } from '@nestjs/typeorm';
-    import { Repository, ILike } from 'typeorm';
-    import { Request, Response } from 'express';
-    import * as bcrypt from 'bcryptjs';
-    import * as crypto from 'crypto';
-    import { diskStorage } from 'multer';
-    import { extname, join } from 'path';
-    import { User, Post } from './entities';
+import { BadRequestException, Controller, ForbiddenException, Get, NotFoundException, Param, Post as HttpPost, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, Body } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Request, Response } from 'express';
+import { AppService } from './app.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, ILike } from 'typeorm';
+import { User } from './entities/user.entity';
+import { Post } from './entities/post.entity';
+import * as bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+import { existsSync, mkdirSync } from 'fs';
 
-    type Sess = Request & { session: any };
+@Controller()
+export class AppController {
+  constructor(private readonly appService: AppService, @InjectRepository(User) private users: Repository<User>, @InjectRepository(Post) private posts: Repository<Post>) {}
 
-    @Controller()
-    export class AppController {
-      constructor(
-        @InjectRepository(User) private users: Repository<User>,
-        @InjectRepository(Post) private posts: Repository<Post>,
-      ) {}
+  private render(res: Response, req: Request, view: string, data: Record<string, any> = {}) {
+    const user = (req as any).user || null;
+    const flash = (req.session as any)?.flash;
+    if (req.session) (req.session as any).flash = undefined;
+    const canCreate = false && !!user;
+    return res.render(view, {
+      layout: 'main',
+      user,
+      flash,
+      canCreate,
+      resetLink: false,
+      detail: true,
+      ...data,
+    });
+  }
 
-      private async render(res: Response, req: Sess, view: string, data: any = {}) {
-        const user = await this.currentUser(req);
-        const flash = req.session?.flash;
-        if (req.session) delete req.session.flash;
-        const body = await new Promise<string>((resolve, reject) => {
-          res.render(view, { ...data, user, canCreate: false, layout: false }, (err, html) => err ? reject(err) : resolve(html || ''));
-        });
-        return res.render('layout', { ...data, user, canCreate: false, flash, body, layout: false });
-      }
+  @Get('health') health() { return { ok: true }; }
 
-      private async currentUser(req: Sess) {
-        return null;
-      }
+  @Get()
+  async home(@Req() req: Request, @Res() res: Response, @Query('page') pageRaw?: string, @Query('q') q?: string) {
+    const rows = await this.posts.find({ order: { createdAt: 'DESC' }, relations: ['author'], take: 50 });
+    const posts = rows.map((p) => ({
+      id: p.id, title: p.title, authorName: p.author.displayName,
+      excerpt: p.content.length > 140 ? p.content.slice(0, 140) + '…' : p.content,
+    }));
+    return this.render(res, req, 'home', { title: 'Latest stories', lead: 'Stories from the circuit desk.', posts });
+  }
 
-      @Get()
-      async home(@Req() req: Sess, @Res() res: Response, @Query('page') page = '1', @Query('q') q = '') {
-        const qb = this.posts.createQueryBuilder('p').leftJoinAndSelect('p.author', 'a').orderBy('p.createdAt', 'DESC');
+  @Get('about')
+  about(@Req() req: Request, @Res() res: Response) {
+    return this.render(res, req, 'about', { title: 'About' });
+  }
 
-        if (false) {
-          if (q) qb.where('p.title ILIKE :q OR p.content ILIKE :q', { q: `%${q}%` });
-          const total = await qb.getCount();
-          const pageSize = 5;
-          const pages = Math.max(1, Math.ceil(total / pageSize));
-          const pageNum = Math.min(Math.max(1, Number(page) || 1), pages);
-          const rows = await qb.skip((pageNum - 1) * pageSize).take(pageSize).getMany();
-          const posts = rows.map(p => ({ id: p.id, title: p.title, authorName: p.author.displayName, excerpt: p.content.length > 140 ? p.content.slice(0,140)+'…' : p.content }));
-          return this.render(res, req, 'home', { title: 'Latest stories', heading: 'Latest stories', lead: 'Stories from Circuit Daily.', posts, q, qDefined: true, pagination: { page: pageNum, pages, prev: pageNum > 1 ? pageNum - 1 : null, next: pageNum < pages ? pageNum + 1 : null } });
-        }
-        const rows = await qb.take(50).getMany();
+  @Get('posts/:id')
+  async detail(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
+    if (!post) throw new NotFoundException();
+    const user = (req as any).user;
+    const canEdit = false && user && user.id === post.authorId;
+    return this.render(res, req, 'post_detail', {
+      title: post.title,
+      post: { id: post.id, title: post.title, content: post.content.replace(/\n/g, '<br>'), authorName: post.author.displayName },
+      canEdit,
+    });
+  }
 
-        const posts = rows.map(p => ({ id: p.id, title: p.title, authorName: p.author.displayName, excerpt: p.content.length > 140 ? p.content.slice(0,140)+'…' : p.content })); return this.render(res, req, 'home', { title: 'Latest stories', heading: 'Latest stories', lead: 'Stories from Circuit Daily.', posts });
-      }
+  @Get('register')
+  registerForm(@Req() req: Request, @Res() res: Response) {
+    return this.render(res, req, 'register', { title: 'Register', error: null });
+  }
 
-      @Get('about')
-      about(@Req() req: Sess, @Res() res: Response) {
-        return this.render(res, req, 'about', { title: 'About' });
-      }
-
-      @Get('posts/:id')
-      async detail(@Param('id') id: string, @Req() req: Sess, @Res() res: Response) {
-        const post = await this.posts.findOne({ where: { id: Number(id) }, relations: ['author'] });
-        if (!post) return res.status(404).send('Not found');
-        const user = await this.currentUser(req);
-        const canEdit = false && user && user.id === post.author.id;
-        return this.render(res, req, 'post_detail', { title: post.title, post: { id: post.id, title: post.title, content: post.content, authorName: post.author.displayName }, canEdit });
-      }
-
-
-      @Get('register')
-      registerForm(@Req() req: Sess, @Res() res: Response) {
-        return this.render(res, req, 'register', { title: 'Register' });
-      }
-
-      @HttpPost('register')
-      async register(@Req() req: Sess, @Res() res: Response) {
-        const username = String(req.body.username || '').trim();
-        const email = String(req.body.email || '').trim().toLowerCase();
-        const password = String(req.body.password || '');
-        if (password.length < 8) return this.render(res, req, 'register', { title: 'Register', error: 'Password must be at least 8 characters' });
-        const exists = await this.users.findOne({ where: [{ username }, { email }] });
-        if (exists) return this.render(res, req, 'register', { title: 'Register', error: 'Username or email already taken' });
-        const user = this.users.create({ username, email, displayName: username, passwordHash: await bcrypt.hash(password, 10) });
-        await this.users.save(user);
-
-        return res.redirect('/');
-      }
-
+  @HttpPost('register')
+  async register(@Req() req: Request, @Res() res: Response, @Body() body: any) {
+    const username = String(body.username || '').trim();
+    const email = String(body.email || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    if (password.length < 8) return this.render(res, req, 'register', { title: 'Register', error: 'Password must be at least 8 characters' });
+    const exists = await this.users.findOne({ where: [{ username }, { email }] });
+    if (exists) return this.render(res, req, 'register', { title: 'Register', error: 'Username or email already taken' });
+    const user = this.users.create({
+      username, email, displayName: username, bio: '', imagePath: null,
+      passwordHash: await bcrypt.hash(password, 10),
+    });
+    await this.users.save(user);
+    return res.redirect('/login');
+  }
 }
