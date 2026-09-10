@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: circuit-daily
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: node dist/main.js
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SESSION_HTTPS_ONLY
+        value: "true"
+      - key: APP_URL
+        sync: false

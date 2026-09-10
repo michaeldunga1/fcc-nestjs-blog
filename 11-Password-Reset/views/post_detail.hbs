@@ -1,0 +1,9 @@
+<article>
+  <h1>{{post.title}}</h1>
+  <p class="text-muted">by {{post.authorName}}</p>
+  <p>{{post.content}}</p>
+  {{#if canEdit}}
+    <a class="btn btn-secondary" href="/posts/{{post.id}}/edit">Edit</a>
+    <form method="post" action="/posts/{{post.id}}/delete" style="display:inline"><button class="btn btn-danger">Delete</button></form>
+  {{/if}}
+</article>

@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5437:5432"
+    environment:
+      POSTGRES_USER: circuit
+      POSTGRES_PASSWORD: circuit
+    volumes:
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - circuit_pg:/var/lib/postgresql/data
+volumes:
+  circuit_pg:
